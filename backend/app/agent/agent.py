@@ -1,18 +1,52 @@
+<<<<<<< Updated upstream
 """Agent loop & Intent Router: Structured Path for expense logging, fallback for agentic paths."""
 import json
 import re
+=======
+"""Main agent dispatcher.
+
+Flow (per the architecture diagram):
+  User message
+    → Intent Router (LLM call #1)
+    → STRUCTURED PATH  (expense_log | budget_query)  — no further LLM calls
+    → AGENTIC PATH     (investment_query | goal_planning | ipo_alert)
+        → Tool loop (get_user_profile, web_search, get_spending_history)
+        → Confidence Scorer (LLM call #2)
+        → Recommendation Object
+    → out_of_scope     — friendly "not supported" reply
+"""
+>>>>>>> Stashed changes
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+<<<<<<< Updated upstream
 from ..config import LLM_API_KEY, LLM_BASE_URL, MODEL
 from ..tools import TOOL_SCHEMAS, finance_tools as T, run_tool
 from . import fallback
 from .prompts import EXPENSE_EXTRACTOR_PROMPT, INTENT_ROUTER_PROMPT, SYSTEM_PROMPT
+=======
+from . import agentic, structured
+from .router import RouterResult, classify
+>>>>>>> Stashed changes
 
-MAX_TURNS = 6
+_OUT_OF_SCOPE_REPLY = {
+    "answer": ("That topic isn't supported yet. I can help with: expense logging, "
+               "budget tracking, stock/fund investment decisions, IPO alerts, "
+               "and savings goal planning."),
+    "metrics": [],
+    "insights": ["Supported intents: expense logging, budget queries, "
+                 "investment decisions, IPO alerts, goal planning."],
+    "sources": [],
+    "tools_used": [],
+    "intent": "out_of_scope",
+    "alert_fired": False,
+}
 
+# Intents that take the agentic path
+_AGENTIC_INTENTS = {"investment_query", "goal_planning", "ipo_alert"}
 
+<<<<<<< Updated upstream
 def _extract_json(text: str) -> dict[str, Any] | None:
     if not text:
         return None
@@ -169,3 +203,25 @@ def answer(db: Session, user_id: int, question: str) -> dict[str, Any]:
         pass
 
     return fallback.answer(db, user_id, question)
+=======
+# Intents that take the structured path
+_STRUCTURED_INTENTS = {"expense_log", "budget_query"}
+
+
+def answer(db: Session, user_id: int, question: str) -> dict[str, Any]:
+    """Route the user's question through the correct path and return a ChatOut dict."""
+
+    # ── LLM Call #1: Intent Router ──────────────────────────────────────────
+    route: RouterResult = classify(question)
+
+    # ── Structured Path (no LLM reasoning) ──────────────────────────────────
+    if route.intent in _STRUCTURED_INTENTS:
+        return structured.handle(db, user_id, route)
+
+    # ── Agentic Path (tool loop + confidence scorer) ─────────────────────────
+    if route.intent in _AGENTIC_INTENTS:
+        return agentic.handle(db, user_id, question, route)
+
+    # ── Out of scope ─────────────────────────────────────────────────────────
+    return _OUT_OF_SCOPE_REPLY
+>>>>>>> Stashed changes

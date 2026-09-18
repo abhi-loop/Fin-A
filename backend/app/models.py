@@ -12,6 +12,7 @@ class User(Base):
     supabase_uid: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
     balance: Mapped[float] = mapped_column(Float, default=0)
     monthly_income: Mapped[float] = mapped_column(Float, default=0)
+    risk_tolerance: Mapped[str] = mapped_column(String(20), default="moderate")
 
 
 class Transaction(Base):

@@ -1,7 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+<<<<<<< Updated upstream
 import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
+=======
+import { authApi } from '../services/api';
+import { demoUser } from '../services/demoData';
+>>>>>>> Stashed changes
 
 interface User { id: string; name: string; email: string }
 
@@ -72,6 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
+<<<<<<< Updated upstream
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw new Error(error.message);
   }, []);
@@ -91,6 +97,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error('Account created! Check your email to confirm, then sign in.');
     }
   }, []);
+=======
+    try {
+      const res = await authApi.login(email, password);
+      persist(res.token, res.user);
+    } catch (error) {
+      if (!authApi.isUnavailable(error)) throw error;
+      persist('demo-token', email ? { ...demoUser, email } : demoUser);
+    }
+  }, [persist]);
+
+  const register = useCallback(async (n: string, e: string, p: string) => {
+    try {
+      const res = await authApi.register(n, e, p);
+      persist(res.token, res.user);
+    } catch (error) {
+      if (!authApi.isUnavailable(error)) throw error;
+      persist('demo-token', { id: demoUser.id, name: n || demoUser.name, email: e });
+    }
+  }, [persist]);
+>>>>>>> Stashed changes
 
   const logout = useCallback(async () => {
     await supabase.auth.signOut();

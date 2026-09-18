@@ -68,6 +68,13 @@ export interface ChatResponse {
   insights: string[];
   sources: string[];
   tools_used?: string[];
+  // Investment / agentic path extras
+  verdict?: 'buy' | 'hold' | 'avoid' | 'insufficient_funds';
+  confidence?: number;         // 0-100
+  reasoning?: string[];
+  caveats?: string[];
+  intent?: string;             // which path handled this
+  alert_fired?: boolean;
 }
 
 export interface ChatMessage {

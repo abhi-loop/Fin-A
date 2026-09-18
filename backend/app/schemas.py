@@ -55,3 +55,10 @@ class ChatOut(BaseModel):
     insights: list[str] = []
     sources: list[str] = []
     tools_used: list[str] = []
+    # Investment / agentic path extras (None for structured path responses)
+    verdict: str | None = None          # buy | hold | avoid | insufficient_funds
+    confidence: int | None = None       # 0-100
+    reasoning: list[str] = []
+    caveats: list[str] = []
+    intent: str | None = None           # which path handled this message
+    alert_fired: bool = False
