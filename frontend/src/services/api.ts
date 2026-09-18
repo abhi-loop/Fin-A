@@ -2,25 +2,26 @@ import axios from 'axios';
 import type {
   Alert, BudgetLine, ChatResponse, DashboardData, Goal, Holding, Transaction,
 } from '../types';
+import { supabase } from '../lib/supabase';
 
 const client = axios.create({
-  baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api',
+  baseURL: import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000/api',
   timeout: 60_000,
 });
 
-client.interceptors.request.use((config) => {
-  const token = localStorage.getItem('finagent_token');
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+// Inject Supabase JWT into every request
+client.interceptors.request.use(async (config) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.access_token) {
+    config.headers.Authorization = `Bearer ${session.access_token}`;
+  }
   return config;
 });
 
 export const authApi = {
-  login: (email: string, password: string) =>
-    client.post<{ token: string; user: { id: number; name: string; email: string } }>(
-      '/auth/login', { email, password },
-    ).then((r) => r.data),
-  register: (name: string, email: string, password: string) =>
-    client.post('/auth/register', { name, email, password }).then((r) => r.data),
+  /** Sync ensures the backend User row exists after Supabase signup */
+  sync: (name: string) =>
+    client.post('/auth/sync', { name }).then((r) => r.data),
 };
 
 export const dashboardApi = {

@@ -5,6 +5,7 @@ tools to call; Python does *all* of the arithmetic, so the model can never
 hallucinate a figure.
 """
 from collections import defaultdict
+from datetime import date
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
@@ -130,13 +131,91 @@ def simulate_purchase(db: Session, user_id: int, amount: float) -> dict[str, Any
 
 
 def create_alert(db: Session, user_id: int, title: str, message: str,
-                 severity: str = "med") -> dict[str, Any]:
+                 severity: str = "med", category: str = "General",
+                 alert_type: str = "agent") -> dict[str, Any]:
     """Save a new alert for the user."""
-    a = Alert(user_id=user_id, type="agent", title=title, message=message,
-              severity=severity, category="Agent")
+    a = Alert(user_id=user_id, type=alert_type, title=title, message=message,
+              severity=severity, category=category)
     db.add(a)
     db.commit()
-    return {"created": True, "id": a.id}
+    return {"created": True, "id": a.id, "title": title, "message": message}
+
+
+def check_and_trigger_budget_alert(db: Session, user_id: int, category: str) -> dict[str, Any] | None:
+    """Check if category spend exceeds budget and trigger an Alert if over threshold."""
+    spending = get_spending_by_category(db, user_id)["spending"]
+    spent = spending.get(category, 0.0)
+    
+    b = db.query(Budget).filter(Budget.user_id == user_id, Budget.category == category).first()
+    if not b or not b.limit_amount:
+        return None
+        
+    limit = b.limit_amount
+    used_pct = round(spent / limit * 100, 1)
+    
+    if spent >= limit:
+        title = f"Budget Alert: {category}"
+        msg = f"You've spent ₹{round(spent):,} of your ₹{round(limit):,} budget in {category} ({used_pct}% used)."
+        existing = db.query(Alert).filter(
+            Alert.user_id == user_id, Alert.category == category, Alert.read == False
+        ).first()
+        if not existing:
+            a = Alert(user_id=user_id, type="budget_overrun", title=title, message=msg,
+                      severity="high", category=category)
+            db.add(a)
+            db.commit()
+            return {"triggered": True, "title": title, "message": msg, "severity": "high", "used_pct": used_pct}
+        return {"triggered": True, "title": title, "message": msg, "severity": "high", "used_pct": used_pct}
+    elif used_pct >= 90:
+        title = f"Near Budget Limit: {category}"
+        msg = f"Warning: You have reached {used_pct}% of your {category} budget (₹{round(spent):,}/₹{round(limit):,})."
+        existing = db.query(Alert).filter(
+            Alert.user_id == user_id, Alert.category == category, Alert.read == False
+        ).first()
+        if not existing:
+            a = Alert(user_id=user_id, type="budget_warning", title=title, message=msg,
+                      severity="med", category=category)
+            db.add(a)
+            db.commit()
+            return {"triggered": True, "title": title, "message": msg, "severity": "med", "used_pct": used_pct}
+        return {"triggered": True, "title": title, "message": msg, "severity": "med", "used_pct": used_pct}
+    return None
+
+
+def add_expense_transaction(db: Session, user_id: int, amount: float, category: str,
+                             description: str, tx_date: date | None = None) -> dict[str, Any]:
+    """Log an expense transaction, update user balance, and trigger budget alerts if over budget."""
+    if tx_date is None:
+        tx_date = date.today()
+        
+    abs_amt = abs(amount)
+    tx = Transaction(user_id=user_id, amount=-abs_amt, type="expense",
+                     category=category, description=description, date=tx_date)
+    db.add(tx)
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if user:
+        user.balance -= abs_amt
+        
+    db.commit()
+    db.refresh(tx)
+    
+    alert_info = check_and_trigger_budget_alert(db, user_id, category)
+    
+    b = db.query(Budget).filter(Budget.user_id == user_id, Budget.category == category).first()
+    spending = get_spending_by_category(db, user_id)["spending"]
+    spent = spending.get(category, 0.0)
+    limit = b.limit_amount if b else 0.0
+    
+    return {
+        "transaction": {"id": tx.id, "amount": abs_amt, "category": category,
+                        "description": description, "date": str(tx.date)},
+        "new_balance": user.balance if user else 0.0,
+        "category_spent": spent,
+        "category_limit": limit,
+        "used_pct": round(spent / limit * 100, 1) if limit else 0,
+        "alert": alert_info,
+    }
 
 
 TOOLS: dict[str, Callable[..., dict[str, Any]]] = {
@@ -163,13 +242,16 @@ _REQUIRED = {"simulate_purchase": ["amount"],
 
 TOOL_SCHEMAS = [
     {
-        "name": name,
-        "description": (fn.__doc__ or "").strip(),
-        "input_schema": {
-            "type": "object",
-            "properties": _EXTRA_PARAMS.get(name, {}),
-            "required": _REQUIRED.get(name, []),
-        },
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": (fn.__doc__ or "").strip(),
+            "parameters": {
+                "type": "object",
+                "properties": _EXTRA_PARAMS.get(name, {}),
+                "required": _REQUIRED.get(name, []),
+            }
+        }
     }
     for name, fn in TOOLS.items()
 ]

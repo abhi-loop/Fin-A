@@ -11,7 +11,12 @@ export function useFetch<T>(fetcher: () => Promise<T>, deps: unknown[] = []) {
     setError(null);
     fetcher()
       .then(setData)
-      .catch(() => setError('Could not reach the server. Is the backend running?'))
+      .catch((e: unknown) => {
+        const resp = (e as { response?: { status?: number } })?.response;
+        setError(resp?.status
+          ? `The backend responded with an error (HTTP ${resp.status}).`
+          : 'Could not reach the server. Is the backend running?');
+      })
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);

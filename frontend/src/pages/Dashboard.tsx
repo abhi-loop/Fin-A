@@ -7,13 +7,18 @@ import {
 import { useFetch } from '../hooks';
 import { dashboardApi, formatINR } from '../services/api';
 
-const MONTHS = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep'];
-
 export default function Dashboard() {
   const { data, loading, error, reload } = useFetch(dashboardApi.get);
 
   if (loading) return <Skeleton rows={5} />;
   if (error || !data) return <ErrorState message={error ?? 'No data'} onRetry={reload} />;
+
+  // Calculate the last 6 months dynamically
+  const today = new Date();
+  const MONTHS = Array.from({ length: 6 }).map((_, i) => {
+    const d = new Date(today.getFullYear(), today.getMonth() - (5 - i), 1);
+    return d.toLocaleString('default', { month: 'short' });
+  });
 
   const chart = data.trend.map((v, i) => ({ month: MONTHS[i] ?? '', spend: v }));
   const totalSpend = Object.values(data.spendingByCategory).reduce((a, b) => a + b, 0);

@@ -1,45 +1,123 @@
 from datetime import date
-
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..agent import agent
+from ..config import SUPABASE_JWT_SECRET
 from ..database import get_db
 from ..models import (Alert, Budget, Goal, Investment, Transaction, User)
-from ..schemas import (BudgetIn, ChatIn, ChatOut, GoalIn, LoginIn, RegisterIn,
+from ..schemas import (BudgetIn, ChatIn, ChatOut, GoalIn,
                        TransactionIn, TransactionOut)
 from ..tools import finance_tools as T
 
 router = APIRouter(prefix="/api")
 
-# Single-user demo auth. Swap for real JWT before anything leaves the hackathon.
 DEMO_USER_ID = 1
 
 
-def current_user_id() -> int:
-    return DEMO_USER_ID
+def current_user_id(authorization: Optional[str] = Header(None),
+                    db: Session = Depends(get_db)) -> int:
+    """Verify Supabase JWT → extract UUID → resolve to integer user_id.
+    Falls back to DEMO_USER_ID when no token / no Supabase secret configured."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return DEMO_USER_ID
+
+    token = authorization.split(" ", 1)[1]
+
+    # Legacy demo-token support (for local dev without Supabase)
+    if token.startswith("demo-token-"):
+        try:
+            return int(token.replace("demo-token-", ""))
+        except ValueError:
+            return DEMO_USER_ID
+
+    # Verify Supabase JWT using PyJWT
+    if not SUPABASE_JWT_SECRET:
+        return DEMO_USER_ID
+
+    import jwt as pyjwt
+
+    try:
+        # Peek at the header to get the actual algorithm
+        header = pyjwt.get_unverified_header(token)
+        alg = header.get("alg", "HS256")
+        print(f"[JWT] alg={alg}", flush=True)
+
+        if alg in ("HS256", "HS384", "HS512"):
+            payload = pyjwt.decode(
+                token,
+                SUPABASE_JWT_SECRET,
+                algorithms=[alg],
+                options={"verify_aud": False},
+            )
+        elif alg in ("RS256", "RS384", "RS512",
+                     "ES256", "ES384", "ES512"):
+            from ..config import SUPABASE_URL
+            print(f"[JWT] RS alg — fetching JWKS from {SUPABASE_URL}", flush=True)
+            jwks_url = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+            signing_key = pyjwt.PyJWKClient(jwks_url).get_signing_key_from_jwt(token).key
+            payload = pyjwt.decode(
+                token,
+                signing_key,
+                algorithms=[alg],
+                options={"verify_aud": False},
+            )
+        else:
+            raise HTTPException(401, f"Unsupported JWT algorithm: {alg}")
+
+        supabase_uid = payload.get("sub")
+        if not supabase_uid:
+            raise HTTPException(401, "Invalid token: missing sub")
+        print(f"[JWT] OK uid={supabase_uid[:8]}...", flush=True)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[JWT] FAILED {type(exc).__name__}: {exc}", flush=True)
+        raise HTTPException(401, f"Token verification failed: {exc}")
+
+    # Look up or auto-create the User row
+    user = db.query(User).filter(User.supabase_uid == supabase_uid).first()
+    if not user:
+        # Auto-create from JWT claims
+        email = payload.get("email", "")
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            # Existing user by email — link their Supabase UID
+            user.supabase_uid = supabase_uid
+            db.commit()
+        else:
+            user = User(
+                name=email.split("@")[0],
+                email=email,
+                supabase_uid=supabase_uid,
+                balance=0,
+                monthly_income=0,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+    return user.id
 
 
-# ---------- auth ----------
-@router.post("/auth/login")
-def login(body: LoginIn, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == body.email).first()
-    if not user or user.password != body.password:
-        raise HTTPException(401, "Invalid email or password")
-    return {"token": f"demo-token-{user.id}",
-            "user": {"id": user.id, "name": user.name, "email": user.email}}
+# ---------- auth sync ----------
+class SyncIn(BaseModel):
+    name: str = ""
 
 
-@router.post("/auth/register")
-def register(body: RegisterIn, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == body.email).first():
-        raise HTTPException(409, "Email already registered")
-    user = User(name=body.name, email=body.email, password=body.password,
-                balance=0, monthly_income=0)
-    db.add(user)
-    db.commit()
-    return {"token": f"demo-token-{user.id}",
-            "user": {"id": user.id, "name": user.name, "email": user.email}}
+@router.post("/auth/sync")
+def auth_sync(body: SyncIn, db: Session = Depends(get_db),
+              uid: int = Depends(current_user_id)):
+    """Ensure the backend User row exists and optionally update the name."""
+    user = db.query(User).filter(User.id == uid).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    if body.name and user.name != body.name:
+        user.name = body.name
+        db.commit()
+    return {"id": user.id, "name": user.name, "email": user.email}
 
 
 # ---------- dashboard ----------
@@ -47,6 +125,23 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
 def dashboard(db: Session = Depends(get_db), uid: int = Depends(current_user_id)):
     user = db.query(User).get(uid)
     savings = T.get_savings_rate(db, uid)
+    
+    # Calculate real 6-month trend
+    today = date.today()
+    expenses_by_month = {}
+    for tx in db.query(Transaction).filter(Transaction.user_id == uid, Transaction.amount < 0).all():
+        key = (tx.date.year, tx.date.month)
+        expenses_by_month[key] = expenses_by_month.get(key, 0) + (-tx.amount)
+        
+    real_trend = []
+    for i in range(5, -1, -1):
+        m = today.month - i
+        y = today.year
+        if m <= 0:
+            m += 12
+            y -= 1
+        real_trend.append(round(expenses_by_month.get((y, m), 0), 2))
+
     return {
         "user": {"name": user.name},
         "balance": user.balance,
@@ -61,8 +156,7 @@ def dashboard(db: Session = Depends(get_db), uid: int = Depends(current_user_id)
         "alerts": [{"title": a.title, "message": a.message, "severity": a.severity}
                    for a in db.query(Alert).filter(Alert.user_id == uid)
                    .order_by(Alert.created_at.desc()).limit(3)],
-        "trend": [28900, 31200, 29600, 34800, 30400,
-                  T.get_monthly_expenses(db, uid)["total_expenses"]],
+        "trend": real_trend,
     }
 
 
@@ -82,8 +176,19 @@ def create_transaction(body: TransactionIn, db: Session = Depends(get_db),
                      category=body.category, description=body.description,
                      date=body.date or date.today())
     db.add(tx)
+    
+    # Update balance
+    user = db.query(User).filter(User.id == uid).first()
+    if user:
+        user.balance += amount
+        
     db.commit()
     db.refresh(tx)
+    
+    # Trigger budget check & alert if expense
+    if body.type == "expense":
+        T.check_and_trigger_budget_alert(db, uid, body.category)
+        
     return tx
 
 

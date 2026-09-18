@@ -15,8 +15,8 @@ export default function Register() {
     try {
       await register(form.name, form.email, form.password);
       navigate('/dashboard');
-    } catch {
-      setError('Could not register. That email may already be in use.');
+    } catch (err: any) {
+      setError(err?.message ?? 'Could not register. That email may already be in use.');
     }
   };
 

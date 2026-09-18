@@ -9,7 +9,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(80))
     email: Mapped[str] = mapped_column(String(160), unique=True, index=True)
-    password: Mapped[str] = mapped_column(String(255))
+    supabase_uid: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
     balance: Mapped[float] = mapped_column(Float, default=0)
     monthly_income: Mapped[float] = mapped_column(Float, default=0)
 
