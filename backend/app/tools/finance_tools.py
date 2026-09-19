@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
-from ..config import SERPER_API_KEY, TAVILY_API_KEY
+from ..config import SERPER_API_KEY, TAVILY_API_KEY,TWELVE_DATA_API_KEY
 from ..models import (Alert, Budget, Goal, Investment, Transaction,
                       UpcomingExpense, User)
 
@@ -219,6 +219,109 @@ def add_expense_transaction(db: Session, user_id: int, amount: float, category: 
         "alert": alert_info,
     }
 
+# ── Market data ───────────────────────────────────────────────────────────────
+
+def get_market_quote(db: Session, user_id: int, symbol: str) -> dict[str, Any]:
+    """
+    Get live market quote for a stock or other supported instrument.
+
+    Examples:
+      RELIANCE
+      RELIANCE:NSE
+      TCS:NSE
+      AAPL
+    """
+    if not TWELVE_DATA_API_KEY:
+        return {
+            "error": "Twelve Data API key is not configured.",
+            "live": False,
+        }
+
+    # Normalize common Indian company names/tickers.
+    raw = symbol.strip().upper()
+
+    indian_symbols = {
+        "RELIANCE": "RELIANCE:NSE",
+        "RELIANCE INDUSTRIES": "RELIANCE:NSE",
+        "TCS": "TCS:NSE",
+        "TATA CONSULTANCY SERVICES": "TCS:NSE",
+        "INFOSYS": "INFY:NSE",
+        "INFY": "INFY:NSE",
+        "HDFC": "HDFCBANK:NSE",
+        "HDFC BANK": "HDFCBANK:NSE",
+        "ICICI": "ICICIBANK:NSE",
+        "ICICI BANK": "ICICIBANK:NSE",
+        "SBI": "SBIN:NSE",
+        "STATE BANK OF INDIA": "SBIN:NSE",
+        "ITC": "ITC:NSE",
+        "WIPRO": "WIPRO:NSE",
+        "AXIS": "AXISBANK:NSE",
+        "AXIS BANK": "AXISBANK:NSE",
+        "ADANI": "ADANIENT:NSE",
+        "MARUTI": "MARUTI:NSE",
+        "ZOMATO": "ZOMATO:NSE",
+        "PAYTM": "PAYTM:NSE",
+    }
+
+    normalized_symbol = indian_symbols.get(raw, raw)
+
+    try:
+        import urllib.parse
+        import urllib.request
+        import json as _json
+
+        params = urllib.parse.urlencode({
+            "symbol": normalized_symbol,
+            "apikey": TWELVE_DATA_API_KEY,
+        })
+
+        url = f"https://api.twelvedata.com/quote?{params}"
+
+        with urllib.request.urlopen(url, timeout=10) as response:
+            data = _json.loads(response.read())
+
+        if data.get("status") == "error":
+            return {
+                "symbol": normalized_symbol,
+                "live": False,
+                "error": data.get("message", "Market data request failed."),
+            }
+
+        return {
+            "symbol": data.get("symbol", normalized_symbol),
+            "name": data.get("name"),
+            "exchange": data.get("exchange"),
+            "currency": data.get("currency"),
+            "price": float(data["close"]) if data.get("close") else None,
+            "open": float(data["open"]) if data.get("open") else None,
+            "high": float(data["high"]) if data.get("high") else None,
+            "low": float(data["low"]) if data.get("low") else None,
+            "previous_close": (
+                float(data["previous_close"])
+                if data.get("previous_close") else None
+            ),
+            "change": float(data["change"]) if data.get("change") else None,
+            "percent_change": (
+                float(data["percent_change"])
+                if data.get("percent_change") else None
+            ),
+            "volume": (
+                int(float(data["volume"]))
+                if data.get("volume") else None
+            ),
+            "is_market_open": data.get("is_market_open"),
+            "datetime": data.get("datetime"),
+            "live": True,
+            "source": "Twelve Data",
+        }
+
+    except Exception as exc:
+        return {
+            "symbol": normalized_symbol,
+            "live": False,
+            "error": f"Market data request failed: {type(exc).__name__}: {exc}",
+        }
+
 
 # ── Agentic-path tools ────────────────────────────────────────────────────────
 
@@ -342,7 +445,7 @@ TOOLS: dict[str, Callable[..., dict[str, Any]]] = {
         get_upcoming_expenses, get_goals, get_investments,
         get_savings_rate, simulate_purchase, create_alert,
         # Agentic path tools
-        get_user_profile, web_search, get_spending_history,
+        get_user_profile, web_search, get_spending_history,get_market_quote,
     ]
 }
 

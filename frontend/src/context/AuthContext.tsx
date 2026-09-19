@@ -1,14 +1,23 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import type { ReactNode } from 'react';
-<<<<<<< Updated upstream
-import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
+import type {
+  Session,
+  User as SupabaseUser,
+} from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
-=======
-import { authApi } from '../services/api';
-import { demoUser } from '../services/demoData';
->>>>>>> Stashed changes
 
-interface User { id: string; name: string; email: string }
+interface User {
+  id: string;
+  name: string;
+  email: string;
+}
 
 interface AuthValue {
   user: User | null;
@@ -33,22 +42,29 @@ function toAppUser(su: SupabaseUser): User {
 async function syncUserToBackend(session: Session) {
   try {
     await fetch(
-      (import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000/api') + '/auth/sync',
+      (import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000/api') +
+        '/auth/sync',
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ name: session.user.user_metadata?.name ?? '' }),
+        body: JSON.stringify({
+          name: session.user.user_metadata?.name ?? '',
+        }),
       },
     );
   } catch {
-    // Non-critical — the backend auto-creates on any authenticated request too
+    // Non-critical — backend can handle the user on authenticated requests
   }
 }
 
-export function AuthProvider({ children }: { children: ReactNode }) {
+export function AuthProvider({
+  children,
+}: {
+  children: ReactNode;
+}) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -59,11 +75,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (session?.user) {
         setUser(toAppUser(session.user));
       }
+
       setLoading(false);
     });
 
-    // Subscribe to changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+    // Subscribe to auth changes
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         if (session?.user) {
           setUser(toAppUser(session.user));
@@ -76,47 +95,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => subscription.unsubscribe();
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
-<<<<<<< Updated upstream
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) throw new Error(error.message);
-  }, []);
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const { error } =
+        await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
 
-  const register = useCallback(async (name: string, email: string, password: string) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: { data: { name } },
-    });
-    if (error) throw new Error(error.message);
-    // Sync to backend so the User row is created immediately
-    if (data.session) {
-      await syncUserToBackend(data.session);
-    } else if (data.user && !data.session) {
-      // Email confirmation is enabled in Supabase — user created but can't login yet
-      throw new Error('Account created! Check your email to confirm, then sign in.');
-    }
-  }, []);
-=======
-    try {
-      const res = await authApi.login(email, password);
-      persist(res.token, res.user);
-    } catch (error) {
-      if (!authApi.isUnavailable(error)) throw error;
-      persist('demo-token', email ? { ...demoUser, email } : demoUser);
-    }
-  }, [persist]);
+      if (error) {
+        throw new Error(error.message);
+      }
+    },
+    [],
+  );
 
-  const register = useCallback(async (n: string, e: string, p: string) => {
-    try {
-      const res = await authApi.register(n, e, p);
-      persist(res.token, res.user);
-    } catch (error) {
-      if (!authApi.isUnavailable(error)) throw error;
-      persist('demo-token', { id: demoUser.id, name: n || demoUser.name, email: e });
-    }
-  }, [persist]);
->>>>>>> Stashed changes
+  const register = useCallback(
+    async (
+      name: string,
+      email: string,
+      password: string,
+    ) => {
+      const { data, error } =
+        await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: { name },
+          },
+        });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      // Sync to backend if a session was created immediately
+      if (data.session) {
+        await syncUserToBackend(data.session);
+      } else if (data.user && !data.session) {
+        // Email confirmation is enabled in Supabase
+        throw new Error(
+          'Account created! Check your email to confirm, then sign in.',
+        );
+      }
+    },
+    [],
+  );
 
   const logout = useCallback(async () => {
     await supabase.auth.signOut();
@@ -124,14 +148,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, loading, login, register, logout }),
+    () => ({
+      user,
+      loading,
+      login,
+      register,
+      logout,
+    }),
     [user, loading, login, register, logout],
   );
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth(): AuthValue {
   const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used inside AuthProvider');
+
+  if (!ctx) {
+    throw new Error(
+      'useAuth must be used inside AuthProvider',
+    );
+  }
+
   return ctx;
 }
