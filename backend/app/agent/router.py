@@ -103,8 +103,9 @@ def _extract_amount(message: str) -> float | None:
         if _NOT_MONEY_AFTER.match(tail) or _NOT_MONEY_BEFORE.search(head):
             continue
         raw = m.group(1)
-        if "," not in raw and re.fullmatch(r"(19|20)\d\d", raw):
-            continue  # looks like a year
+        if re.fullmatch(r"(19|20)\d\d", raw) and re.search(
+                r"\b(in|of|by|since|during|year|fy)\s*$", head, re.I):
+            continue  # "in 2026" is a year; "paid 2000" is money
         amount = _to_amount(raw, None)
         if amount:
             return amount
@@ -253,7 +254,7 @@ def _regex_classify(message: str) -> RouterResult:
 
     # Completed expense (statements only: "have I spent 5000?" is a question)
     if (
-        re.search(r"\b(spent|paid|bought|purchased|expense|cost me|ordered)\b", q)
+        re.search(r"\b(spent|spend|paid|pay|bought|purchased|expense|cost me|ordered)\b", q)
         and amount is not None
         and not _is_question(message)
     ):
@@ -349,6 +350,12 @@ Allowed intents:
    "I spent 500 on food"
    "I paid 2000 for electricity"
    "Bought shoes for 3000"
+   "spend 500 on food"
+   "pay 2000 for electricity"
+
+   A short command with an amount ("spend 500") means the user is
+   recording an expense. A QUESTION about spending ("should I spend 500?",
+   "how much did I spend?") is not expense_log.
 
 2. budget_query
    The user wants factual information from their financial data.

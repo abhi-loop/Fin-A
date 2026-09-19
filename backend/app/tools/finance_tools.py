@@ -219,109 +219,173 @@ def add_expense_transaction(db: Session, user_id: int, amount: float, category: 
         "alert": alert_info,
     }
 
-# ── Market data ───────────────────────────────────────────────────────────────
+# ── Market data (Twelve Data) ─────────────────────────────────────────────────
+# Replace the WHOLE old get_market_quote function in finance_tools.py with this
+# block (everything from "# ── Market data" down to just above
+# "# ── Agentic-path tools"). Needs no new imports at the top of the file.
+
+# Company name / ticker -> NSE trading symbol
+_NSE_SYMBOLS = {
+    "RELIANCE": "RELIANCE", "RELIANCE INDUSTRIES": "RELIANCE",
+    "TCS": "TCS", "TATA CONSULTANCY SERVICES": "TCS",
+    "INFOSYS": "INFY", "INFY": "INFY",
+    "HDFC": "HDFCBANK", "HDFC BANK": "HDFCBANK", "HDFCBANK": "HDFCBANK",
+    "ICICI": "ICICIBANK", "ICICI BANK": "ICICIBANK", "ICICIBANK": "ICICIBANK",
+    "SBI": "SBIN", "STATE BANK OF INDIA": "SBIN", "SBIN": "SBIN",
+    "ITC": "ITC", "WIPRO": "WIPRO",
+    "AXIS": "AXISBANK", "AXIS BANK": "AXISBANK", "AXISBANK": "AXISBANK",
+    "ADANI": "ADANIENT", "ADANIENT": "ADANIENT",
+    "MARUTI": "MARUTI", "ZOMATO": "ZOMATO", "PAYTM": "PAYTM",
+}
+
+# If Twelve Data's message contains one of these, retrying another symbol
+# format is pointless (bad key, plan limit, rate limit).
+_TD_STOP_HINTS = ("plan", "upgrade", "api key", "apikey", "credits", "limit",
+                  "unauthor")
+
+
+def _twelve_data_quote(params: dict) -> dict[str, Any]:
+    """One /quote call. Twelve Data errors come back as JSON, also on HTTP 4xx."""
+    import json as _json
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    qs = urllib.parse.urlencode({**params, "apikey": TWELVE_DATA_API_KEY})
+    req = urllib.request.Request(
+        f"https://api.twelvedata.com/quote?{qs}",
+        headers={"User-Agent": "Mozilla/5.0 (FinAgent)"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return _json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        try:
+            return _json.loads(exc.read())
+        except Exception:
+            return {"status": "error", "message": f"HTTP {exc.code}"}
+
+
+def _yahoo_quote(ysym: str) -> dict[str, Any]:
+    """Keyless fallback: unofficial Yahoo Finance chart endpoint (RELIANCE.NS, AAPL).
+
+    Same return shape as the Twelve Data path. Raises if both hosts fail.
+    """
+    import json as _json
+    import urllib.parse
+    import urllib.request
+
+    ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+    last: Exception = RuntimeError("no response")
+    for host in ("query1", "query2"):
+        try:
+            url = (f"https://{host}.finance.yahoo.com/v8/finance/chart/"
+                   f"{urllib.parse.quote(ysym)}?range=1d&interval=1d")
+            req = urllib.request.Request(url, headers={"User-Agent": ua})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                meta = _json.loads(resp.read())["chart"]["result"][0]["meta"]
+            price = float(meta["regularMarketPrice"])
+            prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+            change = round(price - prev, 4) if prev else None
+            ts = meta.get("regularMarketTime")
+            return {
+                "symbol": meta.get("symbol", ysym),
+                "name": meta.get("longName") or meta.get("shortName"),
+                "exchange": meta.get("fullExchangeName") or meta.get("exchangeName"),
+                "currency": meta.get("currency"),
+                "price": price,
+                "open": None,
+                "high": meta.get("regularMarketDayHigh"),
+                "low": meta.get("regularMarketDayLow"),
+                "previous_close": prev,
+                "change": change,
+                "percent_change": round(change / prev * 100, 2) if prev else None,
+                "volume": meta.get("regularMarketVolume"),
+                "is_market_open": None,
+                "datetime": datetime.datetime.fromtimestamp(
+                    ts, datetime.timezone.utc).isoformat() if ts else None,
+                "live": True,
+                "source": "Yahoo Finance",
+            }
+        except Exception as exc:
+            last = exc
+    raise last
+
 
 def get_market_quote(db: Session, user_id: int, symbol: str) -> dict[str, Any]:
     """
     Get live market quote for a stock or other supported instrument.
 
-    Examples:
-      RELIANCE
-      RELIANCE:NSE
-      TCS:NSE
-      AAPL
+    Examples: RELIANCE, RELIANCE:NSE, TCS, AAPL, TSLA
     """
     if not TWELVE_DATA_API_KEY:
-        return {
-            "error": "Twelve Data API key is not configured.",
-            "live": False,
-        }
+        return {"error": "Twelve Data API key is not configured.", "live": False}
 
-    # Normalize common Indian company names/tickers.
     raw = symbol.strip().upper()
+    base, _, exch = raw.partition(":")          # accepts "RELIANCE:NSE"
+    nse = _NSE_SYMBOLS.get(raw) or _NSE_SYMBOLS.get(base) or (
+        base if exch == "NSE" else None)
 
-    indian_symbols = {
-        "RELIANCE": "RELIANCE:NSE",
-        "RELIANCE INDUSTRIES": "RELIANCE:NSE",
-        "TCS": "TCS:NSE",
-        "TATA CONSULTANCY SERVICES": "TCS:NSE",
-        "INFOSYS": "INFY:NSE",
-        "INFY": "INFY:NSE",
-        "HDFC": "HDFCBANK:NSE",
-        "HDFC BANK": "HDFCBANK:NSE",
-        "ICICI": "ICICIBANK:NSE",
-        "ICICI BANK": "ICICIBANK:NSE",
-        "SBI": "SBIN:NSE",
-        "STATE BANK OF INDIA": "SBIN:NSE",
-        "ITC": "ITC:NSE",
-        "WIPRO": "WIPRO:NSE",
-        "AXIS": "AXISBANK:NSE",
-        "AXIS BANK": "AXISBANK:NSE",
-        "ADANI": "ADANIENT:NSE",
-        "MARUTI": "MARUTI:NSE",
-        "ZOMATO": "ZOMATO:NSE",
-        "PAYTM": "PAYTM:NSE",
-    }
+    if nse:  # try the documented formats in turn
+        attempts = [{"symbol": nse, "exchange": "NSE"},
+                    {"symbol": nse, "mic_code": "XNSE"},
+                    {"symbol": f"{nse}:NSE"}]
+    elif exch:
+        attempts = [{"symbol": base, "exchange": exch}]
+    else:
+        attempts = [{"symbol": raw}]
 
-    normalized_symbol = indian_symbols.get(raw, raw)
+    def _f(v: Any) -> float | None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
 
-    try:
-        import urllib.parse
-        import urllib.request
-        import json as _json
+    errors: list[str] = []
+    for params in attempts:
+        try:
+            data = _twelve_data_quote(params)
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+            continue
 
-        params = urllib.parse.urlencode({
-            "symbol": normalized_symbol,
-            "apikey": TWELVE_DATA_API_KEY,
-        })
-
-        url = f"https://api.twelvedata.com/quote?{params}"
-
-        with urllib.request.urlopen(url, timeout=10) as response:
-            data = _json.loads(response.read())
-
-        if data.get("status") == "error":
+        if data.get("status") != "error" and data.get("close"):
+            vol = _f(data.get("volume"))
             return {
-                "symbol": normalized_symbol,
-                "live": False,
-                "error": data.get("message", "Market data request failed."),
+                "symbol": data.get("symbol", raw),
+                "name": data.get("name"),
+                "exchange": data.get("exchange"),
+                "currency": data.get("currency"),
+                "price": _f(data.get("close")),
+                "open": _f(data.get("open")),
+                "high": _f(data.get("high")),
+                "low": _f(data.get("low")),
+                "previous_close": _f(data.get("previous_close")),
+                "change": _f(data.get("change")),
+                "percent_change": _f(data.get("percent_change")),
+                "volume": int(vol) if vol is not None else None,
+                "is_market_open": data.get("is_market_open"),
+                "datetime": data.get("datetime"),
+                "live": True,
+                "source": "Twelve Data",
             }
 
-        return {
-            "symbol": data.get("symbol", normalized_symbol),
-            "name": data.get("name"),
-            "exchange": data.get("exchange"),
-            "currency": data.get("currency"),
-            "price": float(data["close"]) if data.get("close") else None,
-            "open": float(data["open"]) if data.get("open") else None,
-            "high": float(data["high"]) if data.get("high") else None,
-            "low": float(data["low"]) if data.get("low") else None,
-            "previous_close": (
-                float(data["previous_close"])
-                if data.get("previous_close") else None
-            ),
-            "change": float(data["change"]) if data.get("change") else None,
-            "percent_change": (
-                float(data["percent_change"])
-                if data.get("percent_change") else None
-            ),
-            "volume": (
-                int(float(data["volume"]))
-                if data.get("volume") else None
-            ),
-            "is_market_open": data.get("is_market_open"),
-            "datetime": data.get("datetime"),
-            "live": True,
-            "source": "Twelve Data",
-        }
+        msg = str(data.get("message") or "no price returned")
+        errors.append(msg)
+        if any(h in msg.lower() for h in _TD_STOP_HINTS):
+            break
 
+    # Twelve Data could not serve this symbol (e.g. NSE needs a paid plan):
+    # fall back to the keyless Yahoo endpoint.
+    try:
+        quote = _yahoo_quote(f"{nse}.NS" if nse else base.replace("/", "-"))
+        quote["note"] = "Twelve Data unavailable for this symbol; used Yahoo Finance."
+        return quote
     except Exception as exc:
-        return {
-            "symbol": normalized_symbol,
-            "live": False,
-            "error": f"Market data request failed: {type(exc).__name__}: {exc}",
-        }
+        errors.append(f"Yahoo Finance: {type(exc).__name__}")
 
+    return {"symbol": raw, "live": False,
+            "error": ("Twelve Data: " + " | ".join(errors))[:400]}
 
 # ── Agentic-path tools ────────────────────────────────────────────────────────
 
