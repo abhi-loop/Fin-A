@@ -35,6 +35,7 @@ VALID_INTENTS = {
     "investment_query",
     "goal_planning",
     "ipo_alert",
+    "price_compare",
     "out_of_scope",
 }
 
@@ -203,6 +204,86 @@ def _num(v: Any) -> float | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Shopping / price comparison
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PRODUCT = (
+    r"\b(phones?|mobiles?|smartphones?|iphones?|samsung|pixel|oneplus|redmi|"
+    r"laptops?|macbooks?|notebooks?|watch(?:es)?|smartwatch(?:es)?|"
+    r"headphones?|earbuds?|earphones?|airpods|tablets?|ipads?|tvs?|television|"
+    r"cameras?|consoles?|playstation|ps5|monitors?|keyboards?|shoes|sneakers)\b"
+)
+_PRICE_STRONG = (
+    r"\b(best price|lowest price|compare prices?|price comparison|"
+    r"price compare|best deals?)\b")
+_PRICE_WEAK = (
+    r"\b(cheapest|cheaper|cheap|deals?|discounts?|offers?|"
+    r"where (?:can i |to )?buy|price of|prices? for|how much (?:is|does|for)|"
+    r"cost of|under|below|within|budget)\b")
+
+
+# "I need an iPhone", "looking for a smartwatch", "want to buy a laptop"
+_NEED = (
+    r"\b(i need|i want|i'?m looking for|im looking for|looking for|"
+    r"looking to buy|want to buy|need to buy|wanna buy|planning to buy|"
+    r"plan to buy|thinking of buying|thinking about buying|get me|find me)\b")
+
+# Messages about money already spent / bills are never shopping requests.
+_NOT_SHOPPING = (
+    r"\b(spent|spend|paid|pay|bought|purchased|expenses?|cost me|ordered|"
+    r"bills?|recharge|spending|transactions?|savings?)\b")
+
+
+def _is_price_compare(q: str) -> bool:
+    if re.search(r"\bafford", q):
+        return False  # affordability is goal_planning
+    if re.search(_PRICE_STRONG, q):
+        return True
+    if re.search(_NOT_SHOPPING, q):
+        return False
+    has_product = bool(re.search(_PRODUCT, q))
+    if has_product and (re.search(_PRICE_WEAK, q) or re.search(_NEED, q)):
+        return True
+    # bare product mention: "apple watch", "iphone 15"
+    return has_product and len(q.split()) <= 5 and not _is_question(q)
+
+
+def _extract_product(message: str) -> str:
+    """'best price for iPhone 15 under 60k' -> 'iPhone 15'."""
+    q = re.sub(r"[?!]", " ", message)
+    q = re.sub(
+        r"\b(?:under|below|within|less than|upto|up to|around|budget of|"
+        r"max(?:imum)?)\b\s*(?:₹|rs\.?|inr)?\s*\d[\d,]*(?:\.\d+)?"
+        r"\s*(?:k|thousand|lakhs?|lacs?)?", " ", q, flags=re.I)
+    q = re.sub(
+        r"\b(?:what(?:'s| is)|whats|show me|find me|find|get me|"
+        r"looking to buy|want to buy|need to buy|wanna buy|planning to buy|"
+        r"plan to buy|thinking of buying|thinking about buying|"
+        r"i want to|i want|i need to|i need|i'm looking for|im looking for|"
+        r"looking for|can you|please|"
+        r"tell me|best price(?: for| of| on)?|lowest price(?: for| of| on)?|"
+        r"compare prices?(?: for| of| on)?|price comparison(?: for| of)?|"
+        r"price compare|price of|prices? for|cost of|best deals?(?: on| for)?|"
+        r"deals?(?: on| for)?|discounts?(?: on| for)?|offers?(?: on| for)?|"
+        r"where (?:can i |to )?buy|how much (?:is|does|for)|cheap(?:est|er)?|"
+        r"buy|purchase|online|in india|for me|the|an?|to|on|for|of)\b",
+        " ", q, flags=re.I)
+    q = re.sub(r"[.,]", " ", q)
+    return re.sub(r"\s+", " ", q).strip()[:80]
+
+
+def _add_shopping_entities(entities: dict[str, Any], message: str) -> None:
+    entities["product"] = _extract_product(message)
+    # The number right after "under/below/within...", so a model number
+    # like "iPhone 15" is never mistaken for the budget.
+    m = re.search(
+        rf"\b(?:under|below|within|less than|upto|up to|max(?:imum)?|"
+        rf"budget(?: of)?)\s*(?:₹|rs\.?|inr)?\s*{_NUM}{_MULT}",
+        message, re.I)
+    entities["max_price"] = _to_amount(m.group(1), m.group(2)) if m else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Deterministic classifier (also used to sanity-check the LLMs)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -240,8 +321,18 @@ def _regex_classify(message: str) -> RouterResult:
     if re.search(_IPO, q):
         return RouterResult("ipo_alert", entities)
 
-    if re.search(_STRONG_INVEST, q) or (
-            ticker and re.search(_TICKER_DECISION, q)):
+    if re.search(_STRONG_INVEST, q):
+        return RouterResult("investment_query", entities)
+
+    if _is_price_compare(q):
+        _add_shopping_entities(entities, message)
+        return RouterResult("price_compare", entities)
+
+    if re.search(_PRODUCT, q):   # "Apple Watch" is a product, not the AAPL stock
+        ticker = None
+        entities["ticker"] = None
+
+    if ticker and re.search(_TICKER_DECISION, q):
         return RouterResult("investment_query", entities)
 
     if re.search(_GOAL, q):
@@ -297,6 +388,11 @@ def _finalize(data: dict[str, Any], message: str,
     if intent == "out_of_scope" and regex_intent != "out_of_scope":
         intent = regex_intent
 
+    # Explicit price-comparison wording beats the LLM's looser guesses.
+    if regex_intent == "price_compare" and intent in {
+            "goal_planning", "budget_query", "investment_query"}:
+        intent = "price_compare"
+
     entities = data.get("entities")
     if not isinstance(entities, dict):
         entities = {}
@@ -309,6 +405,9 @@ def _finalize(data: dict[str, Any], message: str,
         else:
             entities.setdefault(key, None)     # else keep the LLM's value
     entities["amount"] = _num(entities.get("amount"))
+
+    if intent == "price_compare":
+        _add_shopping_entities(entities, message)
 
     # Never log an expense from a question or without an amount.
     if intent == "expense_log":
@@ -408,6 +507,17 @@ Allowed intents:
 
 6. out_of_scope
    The request is unrelated to personal finance.
+
+7. price_compare
+   The user wants the best price / cheapest deal for a product
+   (phone, laptop, watch, headphones...) across shops.
+
+   Examples:
+   "Best price for iPhone 15"
+   "Cheapest laptop under 60k"
+   "Where can I buy AirPods Pro for less?"
+
+   "Can I afford an iPhone?" is goal_planning, NOT price_compare.
 
 IMPORTANT:
 A factual question about savings is NOT goal_planning.
@@ -513,3 +623,58 @@ def classify(message: str) -> RouterResult:
           f"amount={e.get('amount')} ticker={e.get('ticker')} "
           f"category={e.get('category')}", flush=True)
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Money coming IN ("add 10000 to my account")  --  add-only block
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INCOME_ADD_TO = (
+    r"\b(?:add|put|deposit|credit|transfer|top ?up|load)\b.{0,40}?"
+    r"\b(?:to|into|in)\s+(?:my\s+)?(?:acc|account|a/c|balance|wallet|bank|"
+    r"savings(?!\s+goal))\b")
+_INCOME_VERBS = (
+    r"\b(deposit(?:ed)?|credited|received|recieved|earned|refund(?:ed)?|"
+    r"got paid|salary\s+(?:credited|received|came)|got (?:my )?salary)\b")
+
+
+def _income_amount(message: str):
+    """Rs 10,000 / ₹5k / 1.5 lakh / 10000 -> float, or None."""
+    m = re.search(
+        r"(?:₹|\brs\.?|\binr\b)?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|thousand|lakhs?|lacs?|crores?|cr)?\b",
+        message, re.I)
+    if not m:
+        return None
+    try:
+        value = float(m.group(1).replace(",", "").rstrip("."))
+    except ValueError:
+        return None
+    mult = {"k": 1e3, "thousand": 1e3, "lakh": 1e5, "lakhs": 1e5, "lac": 1e5,
+            "lacs": 1e5, "crore": 1e7, "crores": 1e7, "cr": 1e7}
+    value *= mult.get((m.group(2) or "").lower(), 1)
+    return value if value > 0 else None
+
+
+def _is_income(message: str) -> bool:
+    q = message.lower().strip()
+    if q.endswith("?") or re.match(
+            r"(how|what|which|did|have|has|am|is|are|do|does|can|could|"
+            r"should|show|tell|where|when|why|list)\b", q):
+        return False  # a question, not a deposit
+    if _income_amount(message) is None:
+        return False
+    return bool(re.search(_INCOME_ADD_TO, q) or re.search(_INCOME_VERBS, q))
+
+
+_classify_before_income = classify   # keep your existing classify() untouched
+
+
+def classify(message: str) -> "RouterResult":          # noqa: F811
+    if _is_income(message):
+        q = message.lower()
+        category = ("Salary" if "salary" in q
+                    else "Refund" if "refund" in q else "Income")
+        return RouterResult("income_log", {
+            "amount": _income_amount(message), "ticker": None,
+            "category": category, "description": message[:160]})
+    return _classify_before_income(message)

@@ -1,9 +1,10 @@
-from . import agentic, structured
+from . import agentic, structured, shopping
 from .router import classify
 
 _STRUCTURED_INTENTS = {
     "expense_log",
     "budget_query",
+    "income_log"
 }
 
 _AGENTIC_INTENTS = {
@@ -31,6 +32,9 @@ def answer(db, user_id, question):
             user_id,
             route,
         )
+
+    if route.intent == "price_compare":
+      return shopping.handle(db, user_id, route)
 
     if route.intent in _AGENTIC_INTENTS:
         return agentic.handle(

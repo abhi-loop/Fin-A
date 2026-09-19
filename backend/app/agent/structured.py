@@ -359,10 +359,59 @@ def _handle_budget_query(db: Session, user_id: int,
         ["Budget", "Transactions"], ["get_budget", "get_savings_rate"])
 
 
+def _handle_income_log(db, user_id, route):
+    from datetime import date
+    from ..models import Transaction, User
+ 
+    def _rs(n):
+        return "Rs " + f"{round(abs(n)):,}"
+ 
+    entities = route.entities or {}
+    try:
+        amount = float(entities["amount"]) if entities.get("amount") is not None else None
+    except (TypeError, ValueError):
+        amount = None
+ 
+    def reply(text, metrics=None, insights=None):
+        return {"answer": text, "metrics": metrics or [], "insights": insights or [],
+                "sources": ["Transactions", "User Profile"] if metrics else [],
+                "tools_used": ["add_income_transaction"] if metrics else [],
+                "intent": "income_log", "alert_fired": False}
+ 
+    if not amount or amount <= 0:
+        return reply('I couldn\'t detect the amount. Try: "add 10000 to my account".')
+ 
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return reply("I couldn't find your financial profile.")
+ 
+    category = entities.get("category")
+    if category not in ("Income", "Salary", "Refund"):
+        category = "Income"
+ 
+    old_balance = float(user.balance or 0)
+    db.add(Transaction(user_id=user_id, amount=abs(amount), type="income",
+                       category=category,
+                       description=(entities.get("description") or "Money added").strip(),
+                       date=date.today()))
+    user.balance = old_balance + abs(amount)        # credit: balance goes UP
+    db.commit()
+ 
+    new_balance = float(user.balance or 0)
+    return reply(
+        f"Added {_rs(amount)} to your account ({category}). "
+        f"Your balance is now {_rs(new_balance)}.",
+        [{"label": "Amount Added", "value": "+" + _rs(amount)},
+         {"label": "Previous Balance", "value": _rs(old_balance)},
+         {"label": "New Balance", "value": _rs(new_balance)}],
+        [f"Recorded as {category} on {date.today().strftime('%d %b %Y')}."])
+ 
 # ─── Public dispatch ──────────────────────────────────────────────────────────
 
 def handle(db: Session, user_id: int, route: RouterResult) -> dict[str, Any]:
     """Dispatch to the correct structured handler based on intent."""
     if route.intent == "expense_log":
         return _handle_expense_log(db, user_id, route)
+    if route.intent == "income_log":
+        return _handle_income_log(db, user_id, route)
     return _handle_budget_query(db, user_id, route)

@@ -62,3 +62,4 @@ class ChatOut(BaseModel):
     caveats: list[str] = []
     intent: str | None = None           # which path handled this message
     alert_fired: bool = False
+    comparison: dict | None = None

@@ -8,6 +8,7 @@ import datetime
 from collections import defaultdict
 from datetime import date
 from typing import Any, Callable
+from .price_compare import compare_prices
 
 from sqlalchemy.orm import Session
 
@@ -509,7 +510,7 @@ TOOLS: dict[str, Callable[..., dict[str, Any]]] = {
         get_upcoming_expenses, get_goals, get_investments,
         get_savings_rate, simulate_purchase, create_alert,
         # Agentic path tools
-        get_user_profile, web_search, get_spending_history,get_market_quote,
+        get_user_profile, web_search, get_spending_history,get_market_quote, compare_prices,
     ]
 }
 

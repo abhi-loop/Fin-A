@@ -1,8 +1,16 @@
+
 import { CheckCircle2 } from 'lucide-react';
 import type { ChatResponse } from '../../types';
 import RecommendationCard from './RecommendationCard';
+import PriceCompareCard from './PriceCompareCard';
 
 export default function AnalysisCard({ data }: { data: ChatResponse }) {
+
+  const comparison = (data as ChatResponse & { comparison?: unknown }).comparison;
+if (comparison) {
+  return <PriceCompareCard data={data} />;
+}
+
   // Investment / agentic path → render the full Recommendation Card
   if (data.verdict) {
     return <RecommendationCard data={data} />;
